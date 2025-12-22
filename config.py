@@ -30,7 +30,7 @@ HEROKU_API_KEY = os.getenv("HEROKU_API_KEY")
 # 🔄 Git & Update Settings
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-UPSTREAM_REPO = os.getenv("UPSTREAM_REPO", "https://github.com/Oyekanhaa/Anupriya-V2.git")
+UPSTREAM_REPO = os.getenv("UPSTREAM_REPO", "https://github.com/MaanavEgo/Anupriya-v2.git")
 UPSTREAM_BRANCH = os.getenv("UPSTREAM_BRANCH", "main")
 GIT_TOKEN = os.getenv("GIT_TOKEN", None)
 
