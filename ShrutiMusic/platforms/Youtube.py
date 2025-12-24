@@ -1,9 +1,6 @@
-#Dual Api Power ðŸ”¥ 
-#Powered By â˜ ï¸
 import asyncio
 import os
 import re
-import json
 from typing import Union
 import yt_dlp
 from pyrogram.enums import MessageEntityType
@@ -13,59 +10,54 @@ from ShrutiMusic.utils.formatters import time_to_seconds
 import aiohttp
 from ShrutiMusic import LOGGER
 
-# --- API Configuration ---
+API_URLS = []
+FALLBACK_API_URL = "https://shrutibots.site"
 
-# Primary API (ShrutixMusic)
-YOUR_API_URL = None
-FALLBACK_API_URL_PRIMARY = "https://shrutibots.site"
-
-# Secondary/Fallback API (TheQuickEarn.xyz - user's second choice)
-FALLBACK_API_URL_SECONDARY = "https://api.thequickearn.xyz"
-FALLBACK_API_KEY_SECONDARY = "30DxNexGenBots0392c1"
-
-# --- Logger Setup ---
-logger = LOGGER(__name__)
-
-# --- Primary API URL Loader ---
-
-async def load_api_url():
-    """Loads the primary API URL from a pastebin link."""
-    global YOUR_API_URL
-    if YOUR_API_URL:
-        return
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://pastebin.com/raw/rLsBhAQa", timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status == 200:
-                    content = await response.text()
-                    YOUR_API_URL = content.strip()
-                    logger.info("Primary API URL loaded successfully")
-                else:
-                    YOUR_API_URL = FALLBACK_API_URL_PRIMARY
-                    logger.info("Using primary fallback API URL (status error)")
-    except Exception:
-        YOUR_API_URL = FALLBACK_API_URL_PRIMARY
-        logger.info("Using primary fallback API URL (connection error)")
+async def load_api_urls():
+    global API_URLS
+    logger = LOGGER("ShrutiMusic.platforms.Youtube.py")
+    
+    loaded_urls = []
+    
+    for pb_id in ["rLsBhAQa", "FwwmTRED", "nfsHqXH2"]:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://pastebin.com/raw/{pb_id}", timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        url = content.strip()
+                        if url:
+                            loaded_urls.append(url)
+        except Exception:
+            continue
+    
+    if loaded_urls:
+        API_URLS = loaded_urls
+        logger.info(f"Loaded {len(API_URLS)} API URLs successfully")
+    else:
+        API_URLS = [FALLBACK_API_URL]
+        logger.info("Using fallback API URL")
 
 try:
     loop = asyncio.get_event_loop()
     if loop.is_running():
-        asyncio.create_task(load_api_url())
+        asyncio.create_task(load_api_urls())
     else:
-        loop.run_until_complete(load_api_url())
+        loop.run_until_complete(load_api_urls())
 except RuntimeError:
     pass
 
-# --- Primary Song Download Logic (ShrutixMusic API) ---
-
-async def _download_song_primary(link: str) -> str:
-    """Attempts to download an audio file using the primary ShrutixMusic API."""
-    global YOUR_API_URL
+async def get_working_api_url():
+    global API_URLS
     
-    if not YOUR_API_URL:
-        await load_api_url()
-        
+    if not API_URLS:
+        await load_api_urls()
+        if not API_URLS:
+            API_URLS = [FALLBACK_API_URL]
+    
+    return API_URLS
+
+async def download_song(link: str) -> str:
     video_id = link.split('v=')[-1].split('&')[0] if 'v=' in link else link
 
     if not video_id or len(video_id) < 3:
@@ -78,193 +70,70 @@ async def _download_song_primary(link: str) -> str:
     if os.path.exists(file_path):
         return file_path
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            params = {"url": video_id, "type": "audio"}
-            
-            # Step 1: Get the stream URL
-            async with session.get(
-                f"{YOUR_API_URL}/download",
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=60)
-            ) as response:
-                if response.status != 200:
-                    raise Exception(f"Primary API responded with status {response.status}")
-
-                data = await response.json()
-                stream_url = data.get("stream_url")
-                
-                if not stream_url:
-                    raise Exception("Primary API did not provide a stream URL")
-                
-                # Step 2: Download the file
-                async with session.get(
-                    stream_url,
-                    timeout=aiohttp.ClientTimeout(total=300)
-                ) as file_response:
-                    if file_response.status != 200:
-                        raise Exception(f"Primary API file download status {file_response.status}")
-                        
-                    with open(file_path, "wb") as f:
-                        async for chunk in file_response.content.iter_chunked(16384):
-                            f.write(chunk)
-                    
-                    return file_path
-
-    except Exception as e:
-        logger.warning(f"Primary API download failed for {link}: {e}")
-        return None
-
-# --- Secondary Song Download Logic (TheQuickEarn API) ---
-
-async def _download_song_secondary(link: str) -> str:
-    """Attempts to download an audio file using the secondary TheQuickEarn API."""
-    video_id = link.split('v=')[-1].split('&')[0] if 'v=' in link else link
-    if not video_id or len(video_id) < 3:
-        return None
-
-    download_folder = "downloads"
-    os.makedirs(download_folder, exist_ok=True)
+    api_urls = await get_working_api_url()
     
-    song_url = f"{FALLBACK_API_URL_SECONDARY}/song/{video_id}?api={FALLBACK_API_KEY_SECONDARY}"
-    
-    async with aiohttp.ClientSession() as session:
-        for attempt in range(3):
-            try:
-                async with session.get(song_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                    if response.status != 200:
-                        raise Exception(f"API request failed with status code {response.status}")
-                
-                    data = await response.json()
-                    status = data.get("status", "").lower()
-
-                    if status == "done":
-                        download_url = data.get("link")
-                        if not download_url:
-                            raise Exception("API response did not provide a download URL.")
-                        break
-                    elif status == "downloading":
-                        await asyncio.sleep(4)
-                    else:
-                        error_msg = data.get("error") or data.get("message") or f"Unexpected status '{status}'"
-                        raise Exception(f"API error: {error_msg}")
-            except Exception as e:
-                logger.warning(f"[FAIL] Secondary API attempt {attempt+1} failed: {e}")
-                if attempt == 2:
-                    return None
-                await asyncio.sleep(2)
-        else:
-            logger.error("Max retries reached on secondary song API.")
-            return None
-
+    for api_url in api_urls:
         try:
-            file_format = data.get("format", "mp3")
-            file_extension = file_format.lower()
-            file_name = f"{video_id}.{file_extension}"
-            file_path = os.path.join(download_folder, file_name)
+            async with aiohttp.ClientSession() as session:
+                params = {"url": video_id, "type": "audio"}
+                
+                async with session.get(
+                    f"{api_url}/download",
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=7)
+                ) as response:
+                    if response.status != 200:
+                        continue
 
-            async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=300)) as file_response:
-                with open(file_path, 'wb') as f:
-                    async for chunk in file_response.content.iter_chunked(8192):
-                        f.write(chunk)
-                return file_path
-        except Exception as e:
-            logger.error(f"Error occurred while downloading song from secondary API: {e}")
-            return None
+                    data = await response.json()
+                    download_token = data.get("download_token")
+                    
+                    if not download_token:
+                        continue
+                    
+                    stream_url = f"{api_url}/stream/{video_id}?type=audio&token={download_token}"
+                    
+                    async with session.get(
+                        stream_url,
+                        timeout=aiohttp.ClientTimeout(total=300)
+                    ) as file_response:
+                        if file_response.status == 302:
+                            redirect_url = file_response.headers.get('Location')
+                            if redirect_url:
+                                async with session.get(redirect_url) as final_response:
+                                    if final_response.status != 200:
+                                        continue
+                                    with open(file_path, "wb") as f:
+                                        async for chunk in final_response.content.iter_chunked(16384):
+                                            f.write(chunk)
+                                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                                        return file_path
+                                    else:
+                                        continue
+                        elif file_response.status == 200:
+                            with open(file_path, "wb") as f:
+                                async for chunk in file_response.content.iter_chunked(16384):
+                                    f.write(chunk)
+                            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                                return file_path
+                            else:
+                                continue
+                        else:
+                            continue
 
-# --- Unified Song Download Function with Fallback ---
-
-async def download_song(link: str) -> str:
-    """
-    Attempts to download an audio file, first via primary API, then via secondary fallback API.
-    """
-    logger.info(f"Attempting song download with primary API for: {link}")
-    # 1. Primary API (ShrutixMusic)
-    downloaded_file = await _download_song_primary(link)
+        except Exception:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+            continue
     
-    if downloaded_file:
-        logger.info(f"Song downloaded successfully via primary API: {downloaded_file}")
-        return downloaded_file
-    
-    logger.warning("Primary song API failed. Falling back to secondary API.")
-    # 2. Secondary API (TheQuickEarn)
-    downloaded_file = await _download_song_secondary(link)
-    
-    if downloaded_file:
-        logger.info(f"Song downloaded successfully via secondary API: {downloaded_file}")
-        return downloaded_file
-        
-    logger.error("Both song APIs failed.")
     return None
 
-
-# --- Video Download Logic (Updated with Fallback for completeness) ---
-
-async def _download_video_secondary(link: str) -> str:
-    """Attempts to download a video file using the secondary TheQuickEarn API."""
-    video_id = link.split('v=')[-1].split('&')[0] if 'v=' in link else link
-    if not video_id or len(video_id) < 3:
-        return None
-
-    download_folder = "downloads"
-    os.makedirs(download_folder, exist_ok=True)
-        
-    video_url = f"{FALLBACK_API_URL_SECONDARY}/video/{video_id}?api={FALLBACK_API_KEY_SECONDARY}"
-    
-    async with aiohttp.ClientSession() as session:
-        for attempt in range(3):
-            try:
-                async with session.get(video_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                    if response.status != 200:
-                        raise Exception(f"API request failed with status code {response.status}")
-                
-                    data = await response.json()
-                    status = data.get("status", "").lower()
-
-                    if status == "done":
-                        download_url = data.get("link")
-                        if not download_url:
-                            raise Exception("API response did not provide a download URL.")
-                        break
-                    elif status == "downloading":
-                        await asyncio.sleep(8)
-                    else:
-                        error_msg = data.get("error") or data.get("message") or f"Unexpected status '{status}'"
-                        raise Exception(f"API error: {error_msg}")
-            except Exception as e:
-                logger.warning(f"[FAIL] Secondary Video API attempt {attempt+1} failed: {e}")
-                if attempt == 2:
-                    return None
-                await asyncio.sleep(2)
-        else:
-            return None
-
-        try:
-            file_format = data.get("format", "mp4")
-            file_extension = file_format.lower()
-            file_name = f"{video_id}.{file_extension}"
-            file_path = os.path.join(download_folder, file_name)
-
-            async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=600)) as file_response:
-                with open(file_path, 'wb') as f:
-                    async for chunk in file_response.content.iter_chunked(8192):
-                        f.write(chunk)
-                return file_path
-        except Exception as e:
-            logger.error(f"Error occurred while downloading video from secondary API: {e}")
-            return None
-
-
 async def download_video(link: str) -> str:
-    """
-    Attempts to download a video file, first via primary API, then via secondary fallback API.
-    """
-    global YOUR_API_URL
-    
-    if not YOUR_API_URL:
-        await load_api_url()
-        
     video_id = link.split('v=')[-1].split('&')[0] if 'v=' in link else link
+
     if not video_id or len(video_id) < 3:
         return None
 
@@ -274,49 +143,67 @@ async def download_video(link: str) -> str:
 
     if os.path.exists(file_path):
         return file_path
+
+    api_urls = await get_working_api_url()
     
-    logger.info(f"Attempting video download with primary API for: {link}")
-    # 1. Primary API (ShrutixMusic)
-    try:
-        async with aiohttp.ClientSession() as session:
-            params = {"url": video_id, "type": "video"}
-            
-            async with session.get(
-                f"{YOUR_API_URL}/download",
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=60)
-            ) as response:
-                if response.status == 200:
+    for api_url in api_urls:
+        try:
+            async with aiohttp.ClientSession() as session:
+                params = {"url": video_id, "type": "video"}
+                
+                async with session.get(
+                    f"{api_url}/download",
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=7)
+                ) as response:
+                    if response.status != 200:
+                        continue
+
                     data = await response.json()
-                    stream_url = data.get("stream_url")
+                    download_token = data.get("download_token")
                     
-                    if stream_url:
-                        async with session.get(
-                            stream_url,
-                            timeout=aiohttp.ClientTimeout(total=600)
-                        ) as file_response:
-                            if file_response.status == 200:
-                                with open(file_path, "wb") as f:
-                                    async for chunk in file_response.content.iter_chunked(16384):
-                                        f.write(chunk)
-                                logger.info(f"Video downloaded successfully via primary API: {file_path}")
+                    if not download_token:
+                        continue
+                    
+                    stream_url = f"{api_url}/stream/{video_id}?type=video&token={download_token}"
+                    
+                    async with session.get(
+                        stream_url,
+                        timeout=aiohttp.ClientTimeout(total=600)
+                    ) as file_response:
+                        if file_response.status == 302:
+                            redirect_url = file_response.headers.get('Location')
+                            if redirect_url:
+                                async with session.get(redirect_url) as final_response:
+                                    if final_response.status != 200:
+                                        continue
+                                    with open(file_path, "wb") as f:
+                                        async for chunk in final_response.content.iter_chunked(16384):
+                                            f.write(chunk)
+                                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                                        return file_path
+                                    else:
+                                        continue
+                        elif file_response.status == 200:
+                            with open(file_path, "wb") as f:
+                                async for chunk in file_response.content.iter_chunked(16384):
+                                    f.write(chunk)
+                            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                                 return file_path
-    except Exception as e:
-        logger.warning(f"Primary video API failed: {e}")
-        pass
+                            else:
+                                continue
+                        else:
+                            continue
 
-    logger.warning("Primary video API failed. Falling back to secondary API.")
-    # 2. Secondary API (TheQuickEarn)
-    downloaded_file = await _download_video_secondary(link)
+        except Exception:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+            continue
     
-    if downloaded_file:
-        logger.info(f"Video downloaded successfully via secondary API: {downloaded_file}")
-        return downloaded_file
-        
-    logger.error("Both video APIs failed.")
     return None
-
-# --- Utility Functions (Kept as is) ---
 
 async def shell_cmd(cmd):
     proc = await asyncio.create_subprocess_shell(
@@ -331,9 +218,6 @@ async def shell_cmd(cmd):
         else:
             return errorz.decode("utf-8")
     return out.decode("utf-8")
-
-
-# --- YouTubeAPI Class ---
 
 class YouTubeAPI:
     def __init__(self):
@@ -410,13 +294,14 @@ class YouTubeAPI:
             link = self.base + link
         if "&" in link:
             link = link.split("&")[0]
-        
-        # Use the unified video download function
-        downloaded_file = await download_video(link)
-        if downloaded_file:
-            return 1, downloaded_file
-        else:
-            return 0, "Video download failed from all APIs"
+        try:
+            downloaded_file = await download_video(link)
+            if downloaded_file:
+                return 1, downloaded_file
+            else:
+                return 0, "Video download failed"
+        except Exception as e:
+            return 0, f"Video download error: {e}"
 
     async def playlist(self, link, limit, user_id, videoid: Union[bool, str] = None):
         if videoid:
@@ -507,17 +392,15 @@ class YouTubeAPI:
         if videoid:
             link = self.base + link
 
-        downloaded_file = None
-        
-        # Determine if video or audio download is requested
-        if video:
-            downloaded_file = await download_video(link)
-        else: # Covers songaudio, songvideo, and default case
-            downloaded_file = await download_song(link)
-        
-        # The 'direct' parameter is set to True as we are using direct API downloads
-        if downloaded_file:
-            return downloaded_file, True 
-        else:
+        try:
+            if video:
+                downloaded_file = await download_video(link)
+            else:
+                downloaded_file = await download_song(link)
+            
+            if downloaded_file:
+                return downloaded_file, True
+            else:
+                return None, False
+        except Exception:
             return None, False
-      
